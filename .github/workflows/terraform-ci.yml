@@ -1,0 +1,132 @@
+# =============================================================================
+# Terraform CI/CD Pipeline
+# =============================================================================
+# Validates and plans Terraform infrastructure changes
+# =============================================================================
+
+name: Terraform CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'terraform_pipeline/terraform/**'
+      - '.github/workflows/terraform-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'terraform_pipeline/terraform/**'
+
+env:
+  TF_VERSION: '1.7.0'
+  TF_WORKING_DIR: 'terraform_pipeline/terraform'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Terraform Format Check
+  # ---------------------------------------------------------------------------
+  terraform-fmt:
+    name: Terraform Format
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # Terraform Validate
+  # ---------------------------------------------------------------------------
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    needs: terraform-fmt
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+  # ---------------------------------------------------------------------------
+  # Terraform Security Scan (optional)
+  # ---------------------------------------------------------------------------
+  terraform-security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: terraform-validate
+    continue-on-error: true
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          working_directory: ${{ env.TF_WORKING_DIR }}
+          soft_fail: true
+
+  # ---------------------------------------------------------------------------
+  # Terraform Plan (requires Azure credentials - manual trigger)
+  # ---------------------------------------------------------------------------
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: terraform-validate
+    if: github.event_name == 'pull_request'
+    
+    # Uncomment and configure secrets for Azure authentication
+    # env:
+    #   ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+    #   ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+    #   ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    #   ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend=false
+
+      - name: Create dummy secrets file
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          echo 'postgres_admin_password = "DummyPassword123!"' > environments/secrets.tfvars
+
+      - name: Terraform Plan (Dev)
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform plan \
+            -var-file=environments/dev.tfvars \
+            -var-file=environments/secrets.tfvars \
+            -input=false \
+            -no-color
+        continue-on-error: true
