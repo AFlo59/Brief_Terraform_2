@@ -218,6 +218,80 @@ plan() {
     terraform plan -var-file="environments/${env}.tfvars" -var-file="environments/secrets.tfvars"
 }
 
+# Fonction build - Construire et pousser l'image Docker vers l'ACR
+# ⚠️ IMPORTANT: A executer AVANT le premier apply !
+build() {
+    local env=${1:-dev}
+    if [[ ! "$env" =~ ^(dev|rec|prod)$ ]]; then
+        echo -e "${_RED}[ERROR]${_NC} Environnement invalide: $env"
+        echo "Usage: build [dev|rec|prod]"
+        return 1
+    fi
+    
+    echo -e "${_BLUE}======================================================================${_NC}"
+    echo -e "${_BLUE}         BUILD & PUSH - Image Docker vers Azure Container Registry   ${_NC}"
+    echo -e "${_BLUE}======================================================================${_NC}"
+    echo ""
+    
+    # Recuperer le nom de l'ACR depuis Terraform output ou le construire
+    local acr_name=$(terraform output -raw acr_login_server 2>/dev/null | cut -d'.' -f1)
+    
+    if [[ -z "$acr_name" ]]; then
+        # Essayer de le trouver dans Azure directement
+        local rg_name=$(grep -E "^existing_resource_group_name" "environments/${env}.tfvars" 2>/dev/null | cut -d'"' -f2)
+        if [[ -z "$rg_name" ]]; then
+            rg_name=$(grep -E "^resource_group_name" "environments/${env}.tfvars" 2>/dev/null | cut -d'"' -f2)
+        fi
+        
+        if [[ -n "$rg_name" ]]; then
+            acr_name=$(az acr list --resource-group "$rg_name" --query "[0].name" -o tsv 2>/dev/null)
+        fi
+    fi
+    
+    if [[ -z "$acr_name" ]]; then
+        echo -e "${_RED}[ERROR]${_NC} Impossible de trouver le nom de l'ACR"
+        echo ""
+        echo "Assurez-vous que l'infrastructure de base est deployee (Storage, ACR, etc.)"
+        echo "Si c'est le premier deploiement, executez d'abord:"
+        echo "  terraform apply -target=azurerm_container_registry.main -var-file=..."
+        return 1
+    fi
+    
+    echo -e "${_GREEN}[INFO]${_NC} ACR detecte: ${_YELLOW}$acr_name${_NC}"
+    echo -e "${_GREEN}[INFO]${_NC} Source:      /workspace/data_pipeline"
+    echo -e "${_GREEN}[INFO]${_NC} Image:       nyc-taxi-pipeline:latest"
+    echo ""
+    
+    # Verifier que le dossier data_pipeline existe
+    if [[ ! -d "/workspace/data_pipeline" ]]; then
+        echo -e "${_RED}[ERROR]${_NC} Dossier /workspace/data_pipeline non trouve"
+        echo "Verifiez que le volume est monte correctement"
+        return 1
+    fi
+    
+    # Verifier que le Dockerfile existe
+    if [[ ! -f "/workspace/data_pipeline/docker/Dockerfile" ]]; then
+        echo -e "${_RED}[ERROR]${_NC} Dockerfile non trouve: /workspace/data_pipeline/docker/Dockerfile"
+        return 1
+    fi
+    
+    echo -e "${_YELLOW}[BUILD]${_NC} Construction et push de l'image vers Azure..."
+    echo "Cela peut prendre quelques minutes..."
+    echo ""
+    
+    if az acr build --registry "$acr_name" --image nyc-taxi-pipeline:latest /workspace/data_pipeline --file /workspace/data_pipeline/docker/Dockerfile; then
+        echo ""
+        echo -e "${_GREEN}[SUCCESS]${_NC} Image construite et poussee avec succes !"
+        echo ""
+        echo -e "${_BLUE}Prochaine etape:${_NC}"
+        echo "  apply $env"
+    else
+        echo ""
+        echo -e "${_RED}[ERROR]${_NC} Echec de la construction de l'image"
+        return 1
+    fi
+}
+
 # Fonction apply (avec generation .env automatique)
 apply() {
     local env=${1:-dev}
@@ -263,6 +337,158 @@ destroy() {
 # Fonction output
 output() {
     terraform output "$@"
+}
+
+# Fonction import - Importer une ressource existante dans le state Terraform
+# Usage simplifie: import <env> <type>  (detecte automatiquement subscription/rg/nom)
+# Usage avance:   import <env> <terraform_resource> <azure_resource_id>
+import() {
+    local env=${1:-}
+    local type_or_resource=${2:-}
+    local resource_id=${3:-}
+    
+    # Afficher l'aide si pas assez d'arguments
+    if [[ -z "$env" ]] || [[ -z "$type_or_resource" ]]; then
+        echo -e "${_BLUE}======================================================================${_NC}"
+        echo -e "${_BLUE}         TERRAFORM IMPORT - Importer une ressource existante         ${_NC}"
+        echo -e "${_BLUE}======================================================================${_NC}"
+        echo ""
+        echo -e "${_YELLOW}Usage simplifie (recommande):${_NC}"
+        echo "  import <env> <type>"
+        echo ""
+        echo -e "${_GREEN}Types disponibles:${_NC}"
+        echo "  container-app    - Container App pipeline"
+        echo "  storage          - Storage Account"
+        echo "  registry         - Container Registry"
+        echo "  environment      - Container App Environment"
+        echo "  postgres         - PostgreSQL Cluster"
+        echo ""
+        echo -e "${_BLUE}Exemples:${_NC}"
+        echo "  import dev container-app   # Importe automatiquement la Container App"
+        echo "  import dev storage         # Importe automatiquement le Storage Account"
+        echo ""
+        echo -e "${_YELLOW}Usage avance:${_NC}"
+        echo "  import <env> <terraform_resource> <azure_resource_id>"
+        echo ""
+        echo -e "${_BLUE}Exemple avance:${_NC}"
+        echo "  import dev azurerm_container_app.pipeline \"/subscriptions/.../containerApps/...\""
+        echo ""
+        echo -e "${_YELLOW}Quand utiliser import ?${_NC}"
+        echo "  - Erreur 'resource already exists' lors d'un apply"
+        echo "  - Une ressource existe dans Azure mais pas dans le state Terraform"
+        echo ""
+        echo -e "${_BLUE}======================================================================${_NC}"
+        return 1
+    fi
+    
+    # Valider l'environnement
+    if [[ ! "$env" =~ ^(dev|rec|prod)$ ]]; then
+        echo -e "${_RED}[ERROR]${_NC} Environnement invalide: $env"
+        echo "Environnements valides: dev, rec, prod"
+        return 1
+    fi
+    
+    # Recuperer automatiquement subscription et resource group
+    local subscription_id=$(az account show --query "id" -o tsv 2>/dev/null | tr -d '[:space:]')
+    if [[ -z "$subscription_id" ]]; then
+        echo -e "${_RED}[ERROR]${_NC} Impossible de recuperer le subscription ID"
+        echo "Verifiez que vous etes connecte: az login --use-device-code"
+        return 1
+    fi
+    
+    # Recuperer le resource group depuis les tfvars (chercher existing_resource_group_name ou resource_group_name)
+    local rg_name=$(grep -E "^existing_resource_group_name" "environments/${env}.tfvars" 2>/dev/null | cut -d'"' -f2)
+    if [[ -z "$rg_name" ]]; then
+        rg_name=$(grep -E "^resource_group_name" "environments/${env}.tfvars" 2>/dev/null | cut -d'"' -f2)
+    fi
+    if [[ -z "$rg_name" ]]; then
+        echo -e "${_RED}[ERROR]${_NC} Impossible de determiner le resource group depuis environments/${env}.tfvars"
+        echo "Verifiez que existing_resource_group_name ou resource_group_name est defini"
+        return 1
+    fi
+    
+    # Recuperer le project_name pour construire les noms de ressources
+    local project_name=$(grep -E "^project_name" "environments/${env}.tfvars" 2>/dev/null | cut -d'"' -f2)
+    if [[ -z "$project_name" ]]; then
+        project_name="nyctaxi"
+    fi
+    
+    echo -e "${_BLUE}[INFO]${_NC} Subscription: $subscription_id"
+    echo -e "${_BLUE}[INFO]${_NC} Resource Group: $rg_name"
+    echo ""
+    
+    local terraform_resource=""
+    local azure_resource_id=""
+    
+    # Si c'est un type simplifie, construire automatiquement l'ID
+    case "$type_or_resource" in
+        container-app|containerapp|ca)
+            # Chercher le nom exact de la Container App dans Azure
+            local ca_name=$(az containerapp list --resource-group "$rg_name" --query "[?contains(name, 'pipeline')].name" -o tsv 2>/dev/null | head -1)
+            if [[ -z "$ca_name" ]]; then
+                ca_name="ca-${project_name}-pipeline-${env}"
+            fi
+            terraform_resource="azurerm_container_app.pipeline"
+            azure_resource_id="/subscriptions/${subscription_id}/resourceGroups/${rg_name}/providers/Microsoft.App/containerApps/${ca_name}"
+            ;;
+        storage|storage-account|sa)
+            local storage_name=$(az storage account list --resource-group "$rg_name" --query "[0].name" -o tsv 2>/dev/null)
+            if [[ -z "$storage_name" ]]; then
+                echo -e "${_RED}[ERROR]${_NC} Aucun Storage Account trouve dans $rg_name"
+                return 1
+            fi
+            terraform_resource="module.storage.azurerm_storage_account.main"
+            azure_resource_id="/subscriptions/${subscription_id}/resourceGroups/${rg_name}/providers/Microsoft.Storage/storageAccounts/${storage_name}"
+            ;;
+        registry|acr|container-registry)
+            local acr_name=$(az acr list --resource-group "$rg_name" --query "[0].name" -o tsv 2>/dev/null)
+            if [[ -z "$acr_name" ]]; then
+                echo -e "${_RED}[ERROR]${_NC} Aucun Container Registry trouve dans $rg_name"
+                return 1
+            fi
+            terraform_resource="azurerm_container_registry.main"
+            azure_resource_id="/subscriptions/${subscription_id}/resourceGroups/${rg_name}/providers/Microsoft.ContainerRegistry/registries/${acr_name}"
+            ;;
+        environment|cae|container-environment)
+            local cae_name=$(az containerapp env list --resource-group "$rg_name" --query "[0].name" -o tsv 2>/dev/null)
+            if [[ -z "$cae_name" ]]; then
+                echo -e "${_RED}[ERROR]${_NC} Aucun Container App Environment trouve dans $rg_name"
+                return 1
+            fi
+            terraform_resource="azurerm_container_app_environment.main"
+            azure_resource_id="/subscriptions/${subscription_id}/resourceGroups/${rg_name}/providers/Microsoft.App/managedEnvironments/${cae_name}"
+            ;;
+        postgres|postgresql|db)
+            local pg_name=$(az postgres server-arc list --resource-group "$rg_name" --query "[0].name" -o tsv 2>/dev/null || \
+                           az cosmosdb postgres cluster list --resource-group "$rg_name" --query "[0].name" -o tsv 2>/dev/null)
+            if [[ -z "$pg_name" ]]; then
+                echo -e "${_RED}[ERROR]${_NC} Aucun PostgreSQL trouve dans $rg_name"
+                echo -e "${_YELLOW}[INFO]${_NC} Pour CosmosDB PostgreSQL, utilisez le mode avance"
+                return 1
+            fi
+            terraform_resource="azurerm_cosmosdb_postgresql_cluster.main"
+            azure_resource_id="/subscriptions/${subscription_id}/resourceGroups/${rg_name}/providers/Microsoft.DBforPostgreSQL/serverGroupsv2/${pg_name}"
+            ;;
+        *)
+            # Mode avance: l'utilisateur fournit directement terraform_resource et azure_resource_id
+            if [[ -z "$resource_id" ]]; then
+                echo -e "${_RED}[ERROR]${_NC} Type inconnu: $type_or_resource"
+                echo ""
+                echo "Types valides: container-app, storage, registry, environment, postgres"
+                echo "Ou utilisez le mode avance: import <env> <terraform_resource> <azure_id>"
+                return 1
+            fi
+            terraform_resource="$type_or_resource"
+            azure_resource_id="$resource_id"
+            ;;
+    esac
+    
+    echo -e "${_GREEN}[IMPORT]${_NC} Environnement: ${_GREEN}$env${_NC}"
+    echo -e "${_GREEN}[IMPORT]${_NC} Ressource TF:  ${_YELLOW}$terraform_resource${_NC}"
+    echo -e "${_GREEN}[IMPORT]${_NC} ID Azure:      $azure_resource_id"
+    echo ""
+    
+    terraform import -var-file="environments/${env}.tfvars" -var-file="environments/secrets.tfvars" "$terraform_resource" "$azure_resource_id"
 }
 
 # Fonction pour regenerer le .env sans redeployer
@@ -332,8 +558,10 @@ tfhelp() {
     echo ""
     echo -e "${_GREEN}Commandes simplifiees:${_NC}"
     echo "  plan [env]     - Previsualiser (defaut: dev)"
+    echo "  build [env]    - Construire et push l'image Docker vers ACR"
     echo "  apply [env]    - Deployer + generer .env (defaut: dev)"
     echo "  destroy [env]  - Detruire + supprimer .env (defaut: dev)"
+    echo "  import         - Importer une ressource existante (voir: import)"
     echo "  output         - Voir les outputs Terraform"
     echo "  genenv [env]   - Regenerer le .env sans redeployer"
     echo "  ca [env]       - Commandes Container App"
@@ -341,11 +569,20 @@ tfhelp() {
     echo ""
     echo -e "${_YELLOW}Environnements:${_NC} dev, rec, prod"
     echo ""
+    echo -e "${_RED}⚠️  PREMIER DEPLOIEMENT - Ordre des commandes:${_NC}"
+    echo "  1. plan dev     - Voir ce qui va etre cree"
+    echo "  2. apply dev    - Creer l'infra (Storage, ACR, PostgreSQL...)"
+    echo "     -> Si erreur Container App, c'est normal ! Continuez..."
+    echo "  3. build dev    - Construire et push l'image vers ACR"
+    echo "  4. apply dev    - Finaliser (Container App avec la vraie image)"
+    echo ""
     echo -e "${_BLUE}Exemples:${_NC}"
-    echo "  plan dev       - Previsualiser l'environnement dev"
-    echo "  apply dev      - Deployer dev + generer shared/.env.dev"
-    echo "  destroy prod   - Detruire prod + supprimer shared/.env.prod"
-    echo "  ca dev         - Voir les commandes Container App pour dev"
+    echo "  plan dev              - Previsualiser l'environnement dev"
+    echo "  build dev             - Build et push l'image Docker"
+    echo "  apply dev             - Deployer dev + generer shared/.env.dev"
+    echo "  destroy prod          - Detruire prod + supprimer shared/.env.prod"
+    echo "  import dev container-app  - Importer la Container App (auto-detecte)"
+    echo "  ca dev                - Voir les commandes Container App pour dev"
     echo ""
     echo -e "${_BLUE}Autres commandes:${_NC}"
     echo "  az login --use-device-code  - Se reconnecter a Azure"
