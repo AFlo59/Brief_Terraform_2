@@ -1,0 +1,37 @@
+[project]
+name = "nyc-taxi-pipeline"
+version = "0.1.0"
+description = "Pipeline de données NYC Taxi avec DLT"
+authors = [
+    {name = "Data Engineer Junior", email = "engineer@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "azure-storage-blob>=12.19.0",
+    "psycopg2-binary>=2.9.9",
+    "python-dateutil>=2.8.2",
+    "loguru>=0.7.0",
+    "duckdb>=0.10.0",
+    "rich>=13.7.0",
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "ruff>=0.1.0",
+]
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pipelines*", "utils*","ingestion*","staging*"]
+
+[tool.ruff]
+line-length = 100

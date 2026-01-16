@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS staging_taxi_trips (
+    trip_id BIGINT PRIMARY KEY,
+    vendor_id BIGINT,
+    tpep_pickup_datetime TIMESTAMP,
+    tpep_dropoff_datetime TIMESTAMP,
+    passenger_count BIGINT,
+    trip_distance DOUBLE PRECISION,
+    ratecode_id BIGINT,
+    pu_location_id BIGINT,
+    do_location_id BIGINT,
+    payment_type BIGINT,
+    fare_amount DOUBLE PRECISION,
+    extra DOUBLE PRECISION,
+    mta_tax DOUBLE PRECISION,
+    tip_amount DOUBLE PRECISION,
+    tolls_amount DOUBLE PRECISION,
+    improvement_surcharge DOUBLE PRECISION,
+    total_amount DOUBLE PRECISION,
+    trip_duration_minutes DOUBLE PRECISION
+);

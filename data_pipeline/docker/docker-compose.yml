@@ -1,0 +1,115 @@
+# =============================================================================
+# Docker Compose - NYC Taxi Data Pipeline
+# =============================================================================
+# Configuration pour exécuter le pipeline localement avec émulateurs
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # =========================================================================
+  # Pipeline principal
+  # =========================================================================
+  pipeline:
+    build:
+      context: ../..
+      dockerfile: data_pipeline/docker/Dockerfile
+    container_name: nyc-taxi-pipeline
+    environment:
+      # Azure Storage (Azurite en local)
+      - AZURE_STORAGE_CONNECTION_STRING=${AZURE_STORAGE_CONNECTION_STRING:-DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1}
+      - AZURE_CONTAINER_NAME=${AZURE_CONTAINER_NAME:-raw}
+      
+      # PostgreSQL
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-nyctaxi}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_SSL_MODE=${POSTGRES_SSL_MODE:-disable}
+      
+      # Configuration Pipeline
+      - START_DATE=${START_DATE:-2024-01}
+      - END_DATE=${END_DATE:-2024-01}
+      - PIPELINE_MODE=${PIPELINE_MODE:-all}
+      
+      # Mode local
+      - USE_LOCAL=${USE_LOCAL:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      azurite:
+        condition: service_started
+    networks:
+      - pipeline-network
+    volumes:
+      - pipeline-data:/app/data
+      - pipeline-logs:/app/logs
+      # Volume partagé avec terraform_pipeline (lecture seule)
+      - ../../shared:/app/shared:ro
+
+  # =========================================================================
+  # PostgreSQL local
+  # =========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: nyc-taxi-postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=nyctaxi
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pipeline-network
+
+  # =========================================================================
+  # Azurite (émulateur Azure Storage)
+  # =========================================================================
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: nyc-taxi-azurite
+    ports:
+      - "10000:10000"  # Blob
+      - "10001:10001"  # Queue
+      - "10002:10002"  # Table
+    volumes:
+      - azurite-data:/data
+    command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0"
+    networks:
+      - pipeline-network
+
+  # =========================================================================
+  # PgAdmin (interface PostgreSQL)
+  # =========================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: nyc-taxi-pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@local.dev
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - pipeline-network
+    profiles:
+      - tools
+
+networks:
+  pipeline-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  azurite-data:
+  pipeline-data:
+  pipeline-logs:

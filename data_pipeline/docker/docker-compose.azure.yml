@@ -1,0 +1,42 @@
+# =============================================================================
+# Docker Compose - NYC Taxi Data Pipeline (Azure Mode)
+# =============================================================================
+# Configuration pour exécuter le pipeline avec les ressources Azure
+# Utilise le fichier .env généré par Terraform
+# =============================================================================
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.azure.yml up pipeline
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # =========================================================================
+  # Pipeline avec Azure
+  # =========================================================================
+  pipeline-azure:
+    build:
+      context: ../..
+      dockerfile: data_pipeline/docker/Dockerfile
+    container_name: nyc-taxi-pipeline-azure
+    # Charge les variables depuis le fichier généré par Terraform
+    # Changez 'dev' par 'rec' ou 'prod' selon l'environnement cible
+    env_file:
+      - ../../shared/.env.dev
+    environment:
+      # Override pour forcer le mode Azure
+      - USE_LOCAL=false
+    networks:
+      - pipeline-network
+    volumes:
+      - pipeline-data:/app/data
+      - pipeline-logs:/app/logs
+      - ../../shared:/app/shared:ro
+
+networks:
+  pipeline-network:
+    driver: bridge
+
+volumes:
+  pipeline-data:
+  pipeline-logs:
