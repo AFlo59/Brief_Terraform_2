@@ -29,12 +29,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: ${{ env.TF_VERSION }}
-          terraform_wrapper: false
+          fetch-depth: 0
+
+      - name: Install Terraform
+        run: |
+          wget -q https://releases.hashicorp.com/terraform/${{ env.TF_VERSION }}/terraform_${{ env.TF_VERSION }}_linux_amd64.zip
+          unzip -q terraform_${{ env.TF_VERSION }}_linux_amd64.zip
+          sudo mv terraform /usr/local/bin/
+          terraform version
 
       - name: Terraform Format Check
         id: fmt
@@ -47,7 +50,6 @@ jobs:
             echo "fmt_result=needs-formatting" >> $GITHUB_OUTPUT
             echo "Note: Run 'terraform fmt -recursive' locally to format files"
           fi
-          exit 0
 
       - name: Terraform Init
         id: init
