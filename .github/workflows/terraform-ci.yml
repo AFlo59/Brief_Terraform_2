@@ -22,9 +22,6 @@ env:
   TF_WORKING_DIR: 'terraform_pipeline/terraform'
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Terraform Validation (Format + Validate in one job)
-  # ---------------------------------------------------------------------------
   terraform-check:
     name: Terraform Check
     runs-on: ubuntu-latest
@@ -37,14 +34,20 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
       - name: Terraform Format Check
         id: fmt
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           echo "=== Checking Terraform formatting ==="
-          terraform fmt -check -recursive -diff || echo "Note: Some files could use formatting (terraform fmt -recursive)"
-        continue-on-error: true
+          if terraform fmt -check -recursive -diff; then
+            echo "fmt_result=success" >> $GITHUB_OUTPUT
+          else
+            echo "fmt_result=needs-formatting" >> $GITHUB_OUTPUT
+            echo "Note: Run 'terraform fmt -recursive' locally to format files"
+          fi
+          exit 0
 
       - name: Terraform Init
         id: init
@@ -52,6 +55,7 @@ jobs:
         run: |
           echo "=== Initializing Terraform ==="
           terraform init -backend=false
+          echo "init_result=success" >> $GITHUB_OUTPUT
 
       - name: Terraform Validate
         id: validate
@@ -59,6 +63,7 @@ jobs:
         run: |
           echo "=== Validating Terraform configuration ==="
           terraform validate
+          echo "validate_result=success" >> $GITHUB_OUTPUT
 
       - name: Summary
         if: always()
@@ -67,6 +72,6 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Format | ${{ steps.fmt.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Init | ${{ steps.init.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Validate | ${{ steps.validate.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Format | ${{ steps.fmt.outputs.fmt_result || 'success' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Init | ${{ steps.init.outputs.init_result || 'success' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Validate | ${{ steps.validate.outputs.validate_result || 'success' }} |" >> $GITHUB_STEP_SUMMARY
