@@ -344,8 +344,8 @@ tfhelp        # Aide complète
                │     │ pickup_location_key │             │
                │     │ dropoff_location_key│             │
                │     │ vendor_key          │             │
-               │     │ payment_key         │◀───┐      │
-               │     │ rate_code_key       │◀─┐ │      │
+               │     │ payment_key         │◀───┐       │
+               │     │ rate_code_key       │◀─┐ │       │
                │     │─────────────────────│   │ │       │
                │     │ passenger_count     │   │ │       │
                │     │ trip_distance       │   │ │       │
